@@ -2,148 +2,97 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-class Structure2D:
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Conception Portique GC", layout="wide")
+
+class StructureSimple:
     def __init__(self):
         self.nodes = [] 
         self.elements = [] 
         self.supports = {} 
-        self.point_loads = [] 
-        self.results = None
+        self.loads = []
 
     def add_node(self, x, y):
         self.nodes.append(np.array([float(x), float(y)]))
-        return len(self.nodes) - 1
 
-    def add_element(self, n1, n2, E=210e6, I=1e-4, A=1e-2):
-        self.elements.append({'nodes': (n1, n2), 'E': E, 'I': I, 'A': A})
+    def add_element(self, n1, n2):
+        self.elements.append((n1, n2))
 
-    def add_support(self, node_idx, tx, ty, rot):
-        self.supports[node_idx] = (tx, ty, rot)
+    def add_support(self, node_idx, type_a):
+        self.supports[node_idx] = type_a
 
-    def add_load(self, node_idx, fx, fy, m):
-        self.point_loads.append((node_idx, fx, fy, m))
+# --- GESTION DU STATE ---
+if 's' not in st.session_state:
+    st.session_state.s = StructureSimple()
 
-    def solve(self):
-        n_nodes = len(self.nodes)
-        if n_nodes < 2 or not self.elements: return
-        
-        K_global = np.zeros((3*n_nodes, 3*n_nodes))
-        F_global = np.zeros(3*n_nodes)
+st.title("🏗️ Aide à la Saisie de Structure")
 
-        # Assemblage de la matrice de rigidité
-        for elem in self.elements:
-            n1, n2 = elem['nodes']
-            p1, p2 = self.nodes[n1], self.nodes[n2]
-            L = np.linalg.norm(p2 - p1)
-            cos, sin = (p2[0]-p1[0])/L, (p2[1]-p1[1])/L
-            T = np.array([[cos, sin, 0, 0, 0, 0], [-sin, cos, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0],
-                          [0, 0, 0, cos, sin, 0], [0, 0, 0, -sin, cos, 0], [0, 0, 0, 0, 0, 1]])
-            
-            E, I, A = elem['E'], elem['I'], elem['A']
-            k_local = np.array([
-                [E*A/L, 0, 0, -E*A/L, 0, 0],
-                [0, 12*E*I/L**3, 6*E*I/L**2, 0, -12*E*I/L**3, 6*E*I/L**2],
-                [0, 6*E*I/L**2, 4*E*I/L, 0, -6*E*I/L**2, 2*E*I/L],
-                [-E*A/L, 0, 0, E*A/L, 0, 0],
-                [0, -12*E*I/L**3, -6*E*I/L**2, 0, 12*E*I/L**3, -6*E*I/L**2],
-                [0, 6*E*I/L**2, 2*E*I/L, 0, -6*E*I/L**2, 4*E*I/L]
-            ])
-            k_global_elem = T.T @ k_local @ T
-            idx = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-            for i in range(6):
-                for j in range(6):
-                    K_global[idx[i], idx[j]] += k_global_elem[i, j]
+col1, col2 = st.columns([1, 2])
 
-        # Forces nodales
-        for node_idx, fx, fy, m in self.point_loads:
-            F_global[3*node_idx:3*node_idx+3] += [fx, fy, m]
+with col1:
+    st.subheader("🛠️ Configuration en direct")
+    
+    # --- NOEUDS ---
+    with st.expander("1. Placer les Noeuds", expanded=True):
+        c1, c2 = st.columns(2)
+        nx = c1.number_input("X (m)", value=0.0, step=0.5)
+        ny = c2.number_input("Y (m)", value=0.0, step=0.5)
+        if st.button("Poser le Noeud"):
+            st.session_state.s.add_node(nx, ny)
 
-        # Application des conditions aux limites (Appuis)
-        free_dofs = np.ones(3*n_nodes, dtype=bool)
-        for node_idx, (tx, ty, rot) in self.supports.items():
-            if tx: free_dofs[3*node_idx] = False
-            if ty: free_dofs[3*node_idx+1] = False
-            if rot: free_dofs[3*node_idx+2] = False
-        
-        U = np.zeros(3*n_nodes)
-        K_sub = K_global[np.ix_(free_dofs, free_dofs)]
-        F_sub = F_global[free_dofs]
-        
-        if np.linalg.det(K_sub) != 0:
-            U[free_dofs] = np.linalg.solve(K_sub, F_sub)
-            reactions = K_global @ U - F_global
-            self.results = {"U": U, "R": reactions}
-            return self.results
-        return None
+    # --- ÉLÉMENTS (BARRES) ---
+    if len(st.session_state.s.nodes) >= 2:
+        with st.expander("2. Tracer les Barres"):
+            indices = list(range(len(st.session_state.s.nodes)))
+            n1 = st.selectbox("Départ", indices, format_func=lambda i: f"N{i}")
+            n2 = st.selectbox("Arrivée", indices, format_func=lambda i: f"N{i}")
+            if st.button("Relier"):
+                if n1 != n2: st.session_state.s.add_element(n1, n2)
 
-def main():
-    st.set_page_config(page_title="Calcul Portique BUT GC", layout="wide")
-    st.title("🏗️ Analyse Structurelle : Portiques & Poutres")
+    # --- APPUIS ---
+    if st.session_state.s.nodes:
+        with st.expander("3. Définir les Appuis"):
+            target = st.selectbox("Sur Noeud", range(len(st.session_state.s.nodes)), key="supp")
+            type_a = st.selectbox("Type d'appui", ["Appui Simple", "Rotule", "Encastrement"])
+            if st.button("Fixer l'appui"):
+                st.session_state.s.add_support(target, type_a)
 
-    if 'struct' not in st.session_state:
-        st.session_state.struct = Structure2D()
+    if st.button("🗑️ Effacer tout", type="primary"):
+        st.session_state.s = StructureSimple()
+        st.rerun()
 
-    col1, col2 = st.columns([1, 2])
+with col2:
+    st.subheader("👀 Visualisation du Schéma Statique")
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    s = st.session_state.s
+    
+    # 1. Dessin des barres (La poutre ou le portique)
+    for (n1, n2) in s.elements:
+        p1, p2 = s.nodes[n1], s.nodes[n2]
+        ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color='#2c3e50', lw=5, zorder=1)
+    
+    # 2. Dessin des noeuds
+    for i, p in enumerate(s.nodes):
+        ax.scatter(p[0], p[1], color='white', edgecolor='black', s=100, zorder=3)
+        ax.text(p[0]+0.1, p[1]+0.1, f"N{i}", fontsize=12, fontweight='bold')
 
-    with col1:
-        st.subheader("🛠️ Modélisation")
-        # --- Saisie Simplifiée (Noeuds/Barres/Appuis) ---
-        with st.expander("Ajouter Noeud"):
-            nx, ny = st.number_input("X"), st.number_input("Y")
-            if st.button("Valider Noeud"): st.session_state.struct.add_node(nx, ny)
+    # 3. Dessin des appuis (Visuels comme sur l'image)
+    for idx, type_a in s.supports.items():
+        p = s.nodes[idx]
+        if type_a == "Rotule":
+            ax.plot(p[0], p[1]-0.2, 'r^', markersize=20) # Triangle
+        elif type_a == "Encastrement":
+            ax.plot([p[0]-0.2, p[0]+0.2], [p[1], p[1]], 'r-', lw=8) # Barre épaisse
+            ax.plot([p[0], p[0]], [p[1], p[1]-0.3], 'r-', lw=2)
+        else: # Appui simple
+            ax.plot(p[0], p[1]-0.2, 'ro', markersize=15, mfc='none') # Cercle
 
-        if len(st.session_state.struct.nodes) >= 2:
-            with st.expander("Ajouter Barre"):
-                n1 = st.number_input("De N", 0, len(st.session_state.struct.nodes)-1)
-                n2 = st.number_input("À N", 0, len(st.session_state.struct.nodes)-1)
-                if st.button("Lier"): st.session_state.struct.add_element(int(n1), int(n2))
+    # Réglages axes
+    ax.set_aspect('equal')
+    ax.grid(True, linestyle=':', alpha=0.6)
+    plt.xlim(-1, 10) # À adapter selon la taille saisie
+    plt.ylim(-1, 6)
+    st.pyplot(fig)
 
-        with st.expander("Appuis & Charges"):
-            target = st.selectbox("Cible", range(len(st.session_state.struct.nodes)))
-            type_a = st.selectbox("Appui", ["Libre", "Rotule", "Encastrement"])
-            f_val = st.number_input("Charge Fy (kN)", value=-10.0)
-            if st.button("Appliquer"):
-                if type_a == "Rotule": st.session_state.struct.add_support(target, 1, 1, 0)
-                elif type_a == "Encastrement": st.session_state.struct.add_support(target, 1, 1, 1)
-                st.session_state.struct.add_load(target, 0, f_val, 0)
-
-        if st.button("🚀 LANCER LE CALCUL", type="primary"):
-            res = st.session_state.struct.solve()
-            if res: st.success("Calcul terminé !")
-            else: st.error("Structure instable ou manque d'appuis.")
-
-    with col2:
-        st.subheader("📊 Résultats & Graphiques")
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-        
-        struct = st.session_state.struct
-        # Graphique 1 : Géométrie et Réactions
-        for elem in struct.elements:
-            p1, p2 = struct.nodes[elem['nodes'][0]], struct.nodes[elem['nodes'][1]]
-            ax1.plot([p1[0], p2[0]], [p1[1], p2[1]], 'k-', lw=2)
-
-        if struct.results:
-            # Affichage des Réactions
-            for n_idx, (tx, ty, rot) in struct.supports.items():
-                rx = struct.results['R'][3*n_idx]
-                ry = struct.results['R'][3*n_idx+1]
-                ax1.text(struct.nodes[n_idx][0], struct.nodes[n_idx][1]-0.5, 
-                         f"Rx:{rx:.1f}\nRy:{ry:.1f}", color='red', fontsize=9)
-            
-            # Graphique 2 : Allure de la Déformée (exagérée)
-            for elem in struct.elements:
-                n1, n2 = elem['nodes']
-                p1, p2 = struct.nodes[n1], struct.nodes[n2]
-                u1 = struct.results['U'][3*n1:3*n1+2]
-                u2 = struct.results['U'][3*n2:3*n2+2]
-                ax2.plot([p1[0]+u1[0]*10, p2[0]+u2[0]*10], [p1[1]+u1[1]*10, p2[1]+u2[1]*10], 'b--', label="Déformée")
-
-        ax1.set_title("Géométrie et Réactions d'Appuis")
-        ax2.set_title("Visualisation de la Déformée (Facteur x10)")
-        st.pyplot(fig)
-
-        if struct.results:
-            st.info(f"**Contrainte Maximale estimée :** {np.max(np.abs(struct.results['U']))*210000:.2f} MPa (Simulation)")
-
-if __name__ == "__main__":
-    main()
+    st.info("💡 Vérifie ici que ta structure ressemble bien au schéma voulu avant de cliquer sur 'Calculer'.")
